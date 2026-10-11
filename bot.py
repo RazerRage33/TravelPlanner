@@ -36,11 +36,9 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 apify_client = ApifyClient(APIFY_TOKEN)
 app = Flask(__name__)
 
-# Initialize Gemini AI
 genai.configure(api_key=GEMINI_API_KEY)
 ai_model = genai.GenerativeModel("gemini-1.5-flash")
 
-# Initialize Google Sheets
 try:
     creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -52,7 +50,6 @@ except Exception as e:
 
 COLLECTIONS = ["🍝 Food & Drink", "🏛️ Sights", "☕ Cafes", "🏨 Stays", "🎉 Nightlife"]
 
-# Register Telegram Menu UI
 try:
     bot.set_my_commands([
         BotCommand("start", "Show instructions"),
@@ -73,7 +70,6 @@ def health():
 # 4. CORE FUNCTIONS
 # ==========================================
 def extract_and_clean_urls(text: str) -> list:
-    """Safely extracts URLs, splits accidental double-pastes, and removes tracking queries."""
     if not text: return []
     raw_urls = re.findall(r'https?://[^\s]+?(?=https?://|$)', text)
     cleaned = []
@@ -84,11 +80,9 @@ def extract_and_clean_urls(text: str) -> list:
     return cleaned
 
 def get_social_data(url: str) -> dict:
-    """Uses Apify to scrape Instagram or TikTok for captions and location tags."""
     data = {"caption": "", "location_tag": ""}
     try:
         logging.info(f"Scraping metadata from: {url}")
-        
         if "instagram.com" in url:
             run = apify_client.actor("apify/instagram-scraper").call(
                 run_input={"directUrls": [url]},
@@ -101,7 +95,6 @@ def get_social_data(url: str) -> dict:
                     data["location_tag"] = loc.get("name", "")
                 elif isinstance(loc, str):
                     data["location_tag"] = loc
-                    
         elif "tiktok.com" in url:
             run = apify_client.actor("apidojo/tiktok-scraper").call(
                 run_input={"startUrls": [{"url": url}]},
@@ -114,14 +107,11 @@ def get_social_data(url: str) -> dict:
                     data["location_tag"] = poi.get("name", "")
                 elif isinstance(poi, str):
                     data["location_tag"] = poi
-                    
-        logging.info(f"Scrape Success -> Caption Len: {len(data['caption'])}, Tag: '{data['location_tag']}'")
     except Exception as e:
         logging.error(f"Apify Scraper Error: {e}")
     return data
 
 def analyze_place_with_ai(user_text: str, caption: str, location_tag: str):
-    """Feeds all context to Gemini to deduce the exact venue name."""
     clean_user_text = re.sub(r'https?://[^\s]+', '', user_text).strip()
     prompt = f"""
 You are a precise geographic entity extractor. Identify the exact venue, restaurant, hotel, or landmark name mentioned.
@@ -147,7 +137,6 @@ Rules:
         return location_tag if location_tag else None
 
 def geocode_place(query: str):
-    """Pulls exact coordinates and high-res images from Google Places API."""
     url = f"https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input={query}&inputtype=textquery&fields=name,geometry,formatted_address,photos,place_id&key={GOOGLE_PLACES_KEY}"
     try:
         res = requests.get(url).json()
@@ -157,7 +146,6 @@ def geocode_place(query: str):
             if "photos" in c and len(c["photos"]) > 0:
                 ref = c["photos"][0]["photo_reference"]
                 photo_url = f"https://maps.googleapis.com/maps/api/place/photo?maxwidth=600&photoreference={ref}&key={GOOGLE_PLACES_KEY}"
-                
             return {
                 "name": c.get("name"), "address": c.get("formatted_address", ""),
                 "lat": c["geometry"]["location"]["lat"], "lng": c["geometry"]["location"]["lng"],
@@ -168,10 +156,9 @@ def geocode_place(query: str):
     return None
 
 def process_and_prompt_save(chat_id: int, message_id: int, search_query: str, link_url: str):
-    """Handles mapping, saving the Pending state to Sheets, and prompting the user."""
     geo = geocode_place(search_query)
     if not geo:
-        bot.send_message(chat_id, f"❌ Google Maps could not find coordinates for: **{search_query}**", parse_mode="Markdown")
+        bot.send_message(chat_id, f"❌ Google Maps could not find coordinates for: <b>{search_query}</b>", parse_mode="HTML")
         return
 
     uid = uuid.uuid4().hex[:8]
@@ -189,14 +176,14 @@ def process_and_prompt_save(chat_id: int, message_id: int, search_query: str, li
     for idx, col in enumerate(COLLECTIONS):
         markup.add(InlineKeyboardButton(col, callback_data=f"set_{uid}_{idx}"))
 
-    bot.send_message(chat_id, f"📍 **{geo['name']}**\n📮 {geo['address']}\n\nSelect a collection to finalize:", reply_markup=markup, parse_mode="Markdown")
+    bot.send_message(chat_id, f"📍 <b>{geo['name']}</b>\n📮 {geo['address']}\n\nSelect a collection to finalize:", reply_markup=markup, parse_mode="HTML")
 
 # ==========================================
 # 5. TELEGRAM MESSAGE HANDLERS
 # ==========================================
 @bot.message_handler(commands=['start', 'help'])
 def handle_start(message):
-    bot.reply_to(message, "👋 **Welcome to Nomad Map!**\nSend any TikTok or Instagram link to log it.")
+    bot.reply_to(message, "👋 <b>Welcome to Nomad Map!</b>\nSend any TikTok or Instagram link to log it.", parse_mode="HTML")
 
 @bot.message_handler(commands=['delete'])
 def handle_delete(message):
@@ -221,20 +208,18 @@ def handle_delete(message):
 def handle_incoming_text(message):
     if not message.text or message.text.startswith('/'): return
 
-    # MANUAL FALLBACK: If user replies to a failed extraction with the venue name
     if message.reply_to_message and message.reply_to_message.text and "🔗 URL:" in message.reply_to_message.text:
         url_match = re.search(r'🔗 URL:\s*([^\s]+)', message.reply_to_message.text)
         saved_url = url_match.group(1) if url_match else "Added manually"
-        status_msg = bot.reply_to(message, f"🔍 Mapping **{message.text.strip()}**...", parse_mode="Markdown")
+        status_msg = bot.reply_to(message, f"🔍 Mapping <b>{message.text.strip()}</b>...", parse_mode="HTML")
         process_and_prompt_save(message.chat.id, status_msg.message_id, message.text.strip(), saved_url)
         return
 
     urls = extract_and_clean_urls(message.text)
     
-    # SCENARIO A: A link was sent
     if urls:
         target_url = urls[0]
-        status_msg = bot.reply_to(message, "⏳ *Scraping video and analyzing...*", parse_mode="Markdown")
+        status_msg = bot.reply_to(message, "⏳ <i>Scraping video and analyzing...</i>", parse_mode="HTML")
         
         social_data = get_social_data(target_url)
         search_query = analyze_place_with_ai(message.text, social_data["caption"], social_data["location_tag"])
@@ -242,17 +227,16 @@ def handle_incoming_text(message):
         if not search_query:
             bot.edit_message_text(
                 chat_id=message.chat.id, message_id=status_msg.message_id,
-                text=(f"⚠️ No venue detected in the caption or tags.\n\n🔗 URL: {target_url}\n\n👉 **Reply to this message** with the venue name to map it manually!"),
-                parse_mode="Markdown"
+                text=(f"⚠️ No venue detected in the caption or tags.\n\n🔗 URL: {target_url}\n\n👉 <b>Reply to this message</b> with the venue name to map it manually!"),
+                parse_mode="HTML"
             )
             return
 
-        bot.edit_message_text(chat_id=message.chat.id, message_id=status_msg.message_id, text=f"🔍 Identified: **{search_query}**\nFetching coordinates...", parse_mode="Markdown")
+        bot.edit_message_text(chat_id=message.chat.id, message_id=status_msg.message_id, text=f"🔍 Identified: <b>{search_query}</b>\nFetching coordinates...", parse_mode="HTML")
         process_and_prompt_save(message.chat.id, status_msg.message_id, search_query, target_url)
 
-    # SCENARIO B: Pure text was sent (e.g. "Add Katz Deli in NY")
     elif len(message.text.split()) >= 2:
-        status_msg = bot.reply_to(message, "🧠 *Analyzing request with AI...*", parse_mode="Markdown")
+        status_msg = bot.reply_to(message, "🧠 <i>Analyzing request with AI...</i>", parse_mode="HTML")
         search_query = analyze_place_with_ai(message.text, "", "")
         if search_query:
             process_and_prompt_save(message.chat.id, status_msg.message_id, search_query, "Added manually")
@@ -270,7 +254,7 @@ def handle_callbacks(call):
             selected_collection = COLLECTIONS[col_idx]
             sheet.update_cell(cell.row, 3, selected_collection)
             place_name = sheet.cell(cell.row, 4).value
-            bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text=f"✅ Saved **{place_name}** to **{selected_collection}**!", parse_mode="Markdown")
+            bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text=f"✅ Saved <b>{place_name}</b> to <b>{selected_collection}</b>!", parse_mode="HTML")
         elif action == "del_":
             sheet.delete_rows(cell.row)
             bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text="🗑️ Spot deleted from map.")
@@ -282,10 +266,8 @@ def handle_callbacks(call):
 # 6. APP EXECUTION & 409 CONFLICT HANDLER
 # ==========================================
 if __name__ == "__main__":
-    # 1. Start Flask Keep-Alive Server
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=PORT, use_reloader=False), daemon=True).start()
 
-    # 2. Clear lingering webhooks to resolve startup conflicts
     try:
         bot.delete_webhook(drop_pending_updates=True)
         time.sleep(2)
@@ -294,10 +276,8 @@ if __name__ == "__main__":
 
     logging.info("Bot is active and polling...")
     
-    # 3. Infinity Polling with 409 Conflict Shield
     while True:
         try:
-            # We don't use skip_pending=True here because delete_webhook already dropped them.
             bot.infinity_polling(timeout=20, long_polling_timeout=20)
         except Exception as e:
             logging.error(f"Telegram API Conflict or Connection Error. Waiting 10 seconds... {e}")
