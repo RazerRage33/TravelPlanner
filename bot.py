@@ -253,8 +253,71 @@ def handle_incoming_text(message):
         social_data = get_social_data(target_url)
         search_query = analyze_place_with_ai(message.text, social_data["caption"], social_data["location_tag"])
 
+        # FIX: Correctly formed fallback block
         if not search_query:
             bot.edit_message_text(
-                chat_id=message.chat.id, message_id=status_msg
-                )
-                return
+                chat_id=message.chat.id, 
+                message_id=status_msg.message_id,
+                text=f"⚠️ No venue detected in the caption or tags.\n\n🔗 URL: {target_url}\n\n👉 <b>Reply to this message</b> with the venue name to map it manually!",
+                parse_mode="HTML"
+            )
+            return
+
+        bot.edit_message_text(chat_id=message.chat.id, message_id=status_msg.message_id, text=f"🔍 Identified: <b>{search_query}</b>\nFetching coordinates...", parse_mode="HTML")
+        process_and_prompt_save(message.chat.id, status_msg.message_id, search_query, target_url)
+
+    # FIX: Rest of the text handling logic restored
+    elif len(message.text.split()) >= 2:
+        status_msg = bot.reply_to(message, "🧠 <i>Analyzing request with AI...</i>", parse_mode="HTML")
+        search_query = analyze_place_with_ai(message.text, "", "")
+        if search_query:
+            process_and_prompt_save(message.chat.id, status_msg.message_id, search_query, "Added manually")
+        else:
+            bot.edit_message_text("❌ Could not extract a specific place name from your text.", chat_id=message.chat.id, message_id=status_msg.message_id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('set_') or call.data.startswith('newc_') or call.data.startswith('del_'))
+def handle_callbacks(call):
+    action = call.data.split('_')[0]
+    uid = call.data.split('_')[1]
+    
+    try:
+        cell = sheet.find(uid)
+        place_name = sheet.cell(cell.row, 4).value
+        
+        # User selected an existing dynamic collection
+        if action == "set":
+            selected_collection = call.data.split('_', 2)[2]
+            sheet.update_cell(cell.row, 3, selected_collection)
+            bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text=f"✅ Saved <b>{place_name}</b> to <b>{selected_collection}</b>!", parse_mode="HTML")
+            
+        # User tapped "Create New Collection"
+        elif action == "newc":
+            prompt_text = f"Type the name of your new collection for <b>{place_name}</b>:\n\n<tg-spoiler>[ID:{uid}]</tg-spoiler>"
+            bot.send_message(call.message.chat.id, prompt_text, reply_markup=ForceReply(selective=False), parse_mode="HTML")
+            bot.delete_message(call.message.chat.id, call.message.message_id) # Remove old buttons
+            
+        elif action == "del":
+            sheet.delete_rows(cell.row)
+            bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text="🗑️ Spot deleted from map.")
+            
+    except Exception as e:
+        logging.error(f"Callback error: {e}")
+        bot.answer_callback_query(call.id, "Error modifying database.")
+
+# ==========================================
+# 6. APP EXECUTION & 409 CONFLICT HANDLER
+# ==========================================
+if __name__ == "__main__":
+    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=PORT, use_reloader=False), daemon=True).start()
+    try:
+        bot.delete_webhook(drop_pending_updates=True)
+        time.sleep(2)
+    except:
+        pass
+    logging.info("Bot is active and polling...")
+    
+    while True:
+        try:
+            bot.infinity_polling(timeout=20, long_polling_timeout=20)
+        except Exception as e:
+            time.sleep(10)
