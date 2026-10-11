@@ -37,7 +37,7 @@ apify_client = ApifyClient(APIFY_TOKEN)
 app = Flask(__name__)
 
 genai.configure(api_key=GEMINI_API_KEY)
-ai_model = genai.GenerativeModel("gemini-1.5-flash")
+ai_model = genai.GenerativeModel("gemini-3.8-flash")
 
 try:
     creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
@@ -256,3 +256,5 @@ def handle_incoming_text(message):
         if not search_query:
             bot.edit_message_text(
                 chat_id=message.chat.id, message_id=status_msg
+                )
+                return
