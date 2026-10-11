@@ -9,7 +9,7 @@ from datetime import datetime
 from flask import Flask
 
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, ForceReply
 import requests
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -37,7 +37,7 @@ apify_client = ApifyClient(APIFY_TOKEN)
 app = Flask(__name__)
 
 genai.configure(api_key=GEMINI_API_KEY)
-ai_model = genai.GenerativeModel("gemini-3.8-flash")
+ai_model = genai.GenerativeModel("gemini-1.5-flash")
 
 try:
     creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
@@ -47,8 +47,6 @@ try:
     sheet = gc.open(SHEET_NAME).sheet1
 except Exception as e:
     logging.error(f"Failed to connect to Google Sheets: {e}")
-
-COLLECTIONS = ["🍝 Food & Drink", "🏛️ Sights", "☕ Cafes", "🏨 Stays", "🎉 Nightlife"]
 
 try:
     bot.set_my_commands([
@@ -84,12 +82,8 @@ def get_social_data(url: str) -> dict:
     try:
         logging.info(f"Scraping metadata from: {url}")
         if "instagram.com" in url:
-            run = apify_client.actor("apify/instagram-scraper").call(
-                run_input={"directUrls": [url]}
-            )
-            # Safely extract dataset ID regardless of Apify SDK version
+            run = apify_client.actor("apify/instagram-scraper").call(run_input={"directUrls": [url]})
             dataset_id = run.default_dataset_id if hasattr(run, 'default_dataset_id') else run["defaultDatasetId"]
-            
             for item in apify_client.dataset(dataset_id).iterate_items():
                 data["caption"] = item.get("caption", "")
                 loc = item.get("location")
@@ -97,14 +91,9 @@ def get_social_data(url: str) -> dict:
                     data["location_tag"] = loc.get("name", "")
                 elif isinstance(loc, str):
                     data["location_tag"] = loc
-                    
         elif "tiktok.com" in url:
-            run = apify_client.actor("apidojo/tiktok-scraper").call(
-                run_input={"startUrls": [{"url": url}]}
-            )
-            # Safely extract dataset ID regardless of Apify SDK version
+            run = apify_client.actor("apidojo/tiktok-scraper").call(run_input={"startUrls": [{"url": url}]})
             dataset_id = run.default_dataset_id if hasattr(run, 'default_dataset_id') else run["defaultDatasetId"]
-            
             for item in apify_client.dataset(dataset_id).iterate_items():
                 data["caption"] = item.get("text") or item.get("desc") or ""
                 poi = item.get("poi") or item.get("location")
@@ -112,7 +101,6 @@ def get_social_data(url: str) -> dict:
                     data["location_tag"] = poi.get("name", "")
                 elif isinstance(poi, str):
                     data["location_tag"] = poi
-                    
     except Exception as e:
         logging.error(f"Apify Scraper Error: {e}")
     return data
@@ -161,6 +149,19 @@ def geocode_place(query: str):
         logging.error(f"Google Places Error: {e}")
     return None
 
+def get_dynamic_collections():
+    """Scans the Google Sheet to find the custom collections you've already created."""
+    try:
+        # Fetch only Column C (Collections) for speed
+        cols = sheet.col_values(3)[1:] 
+        # Filter out empty cells and pending statuses, get unique list
+        unique_cols = list(set([c for c in cols if c and c not in ['⏳ Pending', 'Collection']]))
+        # Return up to 6 of your most recent unique collections
+        return unique_cols[-6:] 
+    except Exception as e:
+        logging.error(f"Sheet collection fetch error: {e}")
+        return []
+
 def process_and_prompt_save(chat_id: int, message_id: int, search_query: str, link_url: str):
     geo = geocode_place(search_query)
     if not geo:
@@ -175,12 +176,17 @@ def process_and_prompt_save(chat_id: int, message_id: int, search_query: str, li
         sheet.append_row(row)
     except Exception as e:
         bot.send_message(chat_id, "❌ Error saving to Google Sheets. Check your credentials.")
-        logging.error(f"Sheets Append Error: {e}")
         return
 
+    # Generate Dynamic Collection Buttons
     markup = InlineKeyboardMarkup()
-    for idx, col in enumerate(COLLECTIONS):
-        markup.add(InlineKeyboardButton(col, callback_data=f"set_{uid}_{idx}"))
+    recent_collections = get_dynamic_collections()
+    
+    for col in recent_collections:
+        safe_col_name = col[:40] # Prevent Telegram 64-byte limit crash
+        markup.add(InlineKeyboardButton(f"📁 {col}", callback_data=f"set_{uid}_{safe_col_name}"))
+        
+    markup.add(InlineKeyboardButton("➕ Create New Collection", callback_data=f"newc_{uid}"))
 
     bot.send_message(chat_id, f"📍 <b>{geo['name']}</b>\n📮 {geo['address']}\n\nSelect a collection to finalize:", reply_markup=markup, parse_mode="HTML")
 
@@ -207,84 +213,46 @@ def handle_delete(message):
 
         bot.reply_to(message, "Tap an item to remove it from your map:", reply_markup=markup)
     except Exception as e:
-        logging.error(f"Delete fetch error: {e}")
         bot.reply_to(message, "Could not load spots from Google Sheets.")
 
 @bot.message_handler(func=lambda msg: True)
 def handle_incoming_text(message):
     if not message.text or message.text.startswith('/'): return
 
-    if message.reply_to_message and message.reply_to_message.text and "🔗 URL:" in message.reply_to_message.text:
-        url_match = re.search(r'🔗 URL:\s*([^\s]+)', message.reply_to_message.text)
-        saved_url = url_match.group(1) if url_match else "Added manually"
-        status_msg = bot.reply_to(message, f"🔍 Mapping <b>{message.text.strip()}</b>...", parse_mode="HTML")
-        process_and_prompt_save(message.chat.id, status_msg.message_id, message.text.strip(), saved_url)
-        return
+    # Intercept Stateless Replies (Fallback URLs or New Collections)
+    if message.reply_to_message and message.reply_to_message.text:
+        
+        # 1. URL Fallback 
+        if "🔗 URL:" in message.reply_to_message.text:
+            url_match = re.search(r'🔗 URL:\s*([^\s]+)', message.reply_to_message.text)
+            saved_url = url_match.group(1) if url_match else "Added manually"
+            status_msg = bot.reply_to(message, f"🔍 Mapping <b>{message.text.strip()}</b>...", parse_mode="HTML")
+            process_and_prompt_save(message.chat.id, status_msg.message_id, message.text.strip(), saved_url)
+            return
+            
+        # 2. Custom Collection Fallback
+        if "[ID:" in message.reply_to_message.text:
+            uid_match = re.search(r'\[ID:([a-f0-9]+)\]', message.reply_to_message.text)
+            if uid_match:
+                uid = uid_match.group(1)
+                new_col_name = message.text.strip()
+                try:
+                    cell = sheet.find(uid)
+                    place_name = sheet.cell(cell.row, 4).value
+                    sheet.update_cell(cell.row, 3, new_col_name)
+                    bot.reply_to(message, f"✅ Saved <b>{place_name}</b> to a new collection: <b>{new_col_name}</b>!", parse_mode="HTML")
+                except Exception as e:
+                    bot.reply_to(message, "❌ Error saving new collection. Place might have been deleted.")
+                return
 
     urls = extract_and_clean_urls(message.text)
     
     if urls:
         target_url = urls[0]
         status_msg = bot.reply_to(message, "⏳ <i>Scraping video and analyzing...</i>", parse_mode="HTML")
-        
         social_data = get_social_data(target_url)
         search_query = analyze_place_with_ai(message.text, social_data["caption"], social_data["location_tag"])
 
         if not search_query:
             bot.edit_message_text(
-                chat_id=message.chat.id, message_id=status_msg.message_id,
-                text=(f"⚠️ No venue detected in the caption or tags.\n\n🔗 URL: {target_url}\n\n👉 <b>Reply to this message</b> with the venue name to map it manually!"),
-                parse_mode="HTML"
-            )
-            return
-
-        bot.edit_message_text(chat_id=message.chat.id, message_id=status_msg.message_id, text=f"🔍 Identified: <b>{search_query}</b>\nFetching coordinates...", parse_mode="HTML")
-        process_and_prompt_save(message.chat.id, status_msg.message_id, search_query, target_url)
-
-    elif len(message.text.split()) >= 2:
-        status_msg = bot.reply_to(message, "🧠 <i>Analyzing request with AI...</i>", parse_mode="HTML")
-        search_query = analyze_place_with_ai(message.text, "", "")
-        if search_query:
-            process_and_prompt_save(message.chat.id, status_msg.message_id, search_query, "Added manually")
-        else:
-            bot.edit_message_text("❌ Could not extract a specific place name from your text.", chat_id=message.chat.id, message_id=status_msg.message_id)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('set_') or call.data.startswith('del_'))
-def handle_callbacks(call):
-    action = call.data[:4]
-    uid = call.data.split('_')[1]
-    try:
-        cell = sheet.find(uid)
-        if action == "set_":
-            col_idx = int(call.data.split('_')[2])
-            selected_collection = COLLECTIONS[col_idx]
-            sheet.update_cell(cell.row, 3, selected_collection)
-            place_name = sheet.cell(cell.row, 4).value
-            bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text=f"✅ Saved <b>{place_name}</b> to <b>{selected_collection}</b>!", parse_mode="HTML")
-        elif action == "del_":
-            sheet.delete_rows(cell.row)
-            bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text="🗑️ Spot deleted from map.")
-    except Exception as e:
-        logging.error(f"Callback error: {e}")
-        bot.answer_callback_query(call.id, "Error updating sheet. Item might have been deleted.")
-
-# ==========================================
-# 6. APP EXECUTION & 409 CONFLICT HANDLER
-# ==========================================
-if __name__ == "__main__":
-    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=PORT, use_reloader=False), daemon=True).start()
-
-    try:
-        bot.delete_webhook(drop_pending_updates=True)
-        time.sleep(2)
-    except Exception as e:
-        logging.warning(f"Webhook reset notice: {e}")
-
-    logging.info("Bot is active and polling...")
-    
-    while True:
-        try:
-            bot.infinity_polling(timeout=20, long_polling_timeout=20)
-        except Exception as e:
-            logging.error(f"Telegram API Conflict or Connection Error. Waiting 10 seconds... {e}")
-            time.sleep(10)
+                chat_id=message.chat.id, message_id=status_msg
