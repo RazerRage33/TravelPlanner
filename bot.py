@@ -168,7 +168,15 @@ def process_and_prompt_save(chat_id: int, message_id: int, search_query: str, li
     if not geo:
         bot.send_message(chat_id, f"❌ Google Maps could not find coordinates for: <b>{search_query}</b>", parse_mode="HTML")
         return
-
+        
+    try:
+        existing_records = sheet.col_values(4) # Column D is Location Name
+        if geo["name"] in existing_records:
+            bot.edit_message_text(f"⚠️ <b>{geo['name']}</b> is already saved on your map!", chat_id=chat_id, message_id=message_id, parse_mode="HTML")
+            return
+    except Exception as e:
+        logging.error(f"Duplicate check error: {e}")
+        
     uid = uuid.uuid4().hex[:8]
     date_str = datetime.now().strftime("%Y-%m-%d")
     row = [uid, date_str, "⏳ Pending", geo["name"], geo["address"], geo["lat"], geo["lng"], link_url, geo["image"]]
@@ -211,7 +219,7 @@ def handle_delete(message):
         for row in valid[-8:]:
             title = row.get("Location Name", "Unknown")
             markup.add(InlineKeyboardButton(f"🗑️ {title}", callback_data=f"del_{row.get('ID')}"))
-
+        markup.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_delete"))
         bot.reply_to(message, "Tap an item to remove it from your map:", reply_markup=markup)
     except Exception as e:
         bot.reply_to(message, "Could not load spots from Google Sheets.")
