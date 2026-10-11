@@ -85,8 +85,7 @@ def get_social_data(url: str) -> dict:
         logging.info(f"Scraping metadata from: {url}")
         if "instagram.com" in url:
             run = apify_client.actor("apify/instagram-scraper").call(
-                run_input={"directUrls": [url]},
-                timeout_secs=45
+                run_input={"directUrls": [url]}
             )
             for item in apify_client.dataset(run["defaultDatasetId"]).iterate_items():
                 data["caption"] = item.get("caption", "")
@@ -97,8 +96,7 @@ def get_social_data(url: str) -> dict:
                     data["location_tag"] = loc
         elif "tiktok.com" in url:
             run = apify_client.actor("apidojo/tiktok-scraper").call(
-                run_input={"startUrls": [{"url": url}]},
-                timeout_secs=45
+                run_input={"startUrls": [{"url": url}]}
             )
             for item in apify_client.dataset(run["defaultDatasetId"]).iterate_items():
                 data["caption"] = item.get("text") or item.get("desc") or ""
