@@ -37,7 +37,7 @@ apify_client = ApifyClient(APIFY_TOKEN)
 app = Flask(__name__)
 
 genai.configure(api_key=GEMINI_API_KEY)
-ai_model = genai.GenerativeModel("gemini-3.5-flash")
+ai_model = genai.GenerativeModel("gemini-3.7-flash")
 
 try:
     creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
