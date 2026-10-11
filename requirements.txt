@@ -1,1 +1,6 @@
-
+pyTelegramBotAPI
+requests
+gspread
+oauth2client
+apify-client
+Flask
