@@ -209,11 +209,13 @@ def handle_start(message):
 @bot.message_handler(commands=['delete'])
 def handle_delete(message):
     try:
-        # Use get_all_values() to ignore headers and just read the raw grid
-        rows = sheet.get_all_values()[1:] # Skip the header row entirely
+        rows = sheet.get_all_values()[1:] 
         
-        # Filter valid rows (Index 2 is Collection, Index 0 is ID, Index 3 is Name)
-        valid = [r for r in rows if len(r) >= 4 and r[2] != "⏳ Pending" and r[2] != "Collection"]
+        # FIX: Only grab rows that actually have an ID (Index 0) and a Name (Index 3)
+        valid = [
+            r for r in rows 
+            if len(r) >= 4 and str(r[0]).strip() and str(r[3]).strip() and r[2] != "⏳ Pending"
+        ]
         
         if not valid:
             bot.reply_to(message, "Your map is currently empty.")
@@ -222,9 +224,7 @@ def handle_delete(message):
         markup = InlineKeyboardMarkup()
         for row in valid[-8:]:
             uid = row[0]
-            title = row[3] if str(row[3]).strip() else "Unnamed Place"
-            
-            # Prevent Telegram limit crashes by keeping names under 40 characters
+            title = row[3]
             short_title = (title[:37] + '...') if len(title) > 40 else title
             markup.add(InlineKeyboardButton(f"🗑️ {short_title}", callback_data=f"del_{uid}"))
             
@@ -335,8 +335,17 @@ def handle_incoming_text(message):
         else:
             bot.edit_message_text("❌ Could not extract a specific place name from your text.", chat_id=message.chat.id, message_id=status_msg.message_id)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('set_') or call.data.startswith('newc_') or call.data.startswith('del_'))
+@bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
+    # FIX: Catch the cancel action immediately before trying to split any IDs
+    if call.data == "cancel_delete":
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        return
+
+    # Ignore other callbacks not meant for this handler
+    if not (call.data.startswith('set_') or call.data.startswith('newc_') or call.data.startswith('del_')):
+        return
+
     action = call.data.split('_')[0]
     uid = call.data.split('_')[1]
     
@@ -344,17 +353,15 @@ def handle_callbacks(call):
         cell = sheet.find(uid)
         place_name = sheet.cell(cell.row, 4).value
         
-        # User selected an existing dynamic collection
         if action == "set":
             selected_collection = call.data.split('_', 2)[2]
             sheet.update_cell(cell.row, 3, selected_collection)
             bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text=f"✅ Saved <b>{place_name}</b> to <b>{selected_collection}</b>!", parse_mode="HTML")
             
-        # User tapped "Create New Collection"
         elif action == "newc":
             prompt_text = f"Type the name of your new collection for <b>{place_name}</b>:\n\n<tg-spoiler>[ID:{uid}]</tg-spoiler>"
             bot.send_message(call.message.chat.id, prompt_text, reply_markup=ForceReply(selective=False), parse_mode="HTML")
-            bot.delete_message(call.message.chat.id, call.message.message_id) # Remove old buttons
+            bot.delete_message(call.message.chat.id, call.message.message_id)
             
         elif action == "del":
             sheet.delete_rows(cell.row)
