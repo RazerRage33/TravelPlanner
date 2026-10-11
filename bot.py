@@ -51,6 +51,7 @@ except Exception as e:
 try:
     bot.set_my_commands([
         BotCommand("start", "Show instructions"),
+        BotCommand("list", "View all saved places"),
         BotCommand("delete", "Remove a recently saved place")
     ])
 except Exception as e:
@@ -214,6 +215,46 @@ def handle_delete(message):
         bot.reply_to(message, "Tap an item to remove it from your map:", reply_markup=markup)
     except Exception as e:
         bot.reply_to(message, "Could not load spots from Google Sheets.")
+
+@bot.message_handler(commands=['list', 'collections'])
+def handle_list(message):
+    status_msg = bot.reply_to(message, "⏳ <i>Fetching your collections...</i>", parse_mode="HTML")
+    try:
+        records = sheet.get_all_records()
+        collections_dict = {}
+        
+        # Group places by collection
+        for row in records:
+            col = row.get("Collection")
+            name = row.get("Location Name")
+            if col and col != "⏳ Pending" and col != "Collection" and name:
+                if col not in collections_dict:
+                    collections_dict[col] = []
+                collections_dict[col].append(name)
+                
+        if not collections_dict:
+            bot.edit_message_text("Your map is currently empty.", chat_id=message.chat.id, message_id=status_msg.message_id)
+            return
+
+        # Format the message
+        msg_text = "🗺️ <b>Your Saved Places</b>\n\n"
+        for col, places in collections_dict.items():
+            msg_text += f"<b>📁 {col}</b>\n"
+            for p in places:
+                msg_text += f"  • {p}\n"
+            msg_text += "\n"
+
+        # Send message (handling Telegram's 4096 character limit for long lists)
+        if len(msg_text) > 4000:
+            bot.delete_message(message.chat.id, status_msg.message_id)
+            for x in range(0, len(msg_text), 4000):
+                bot.send_message(message.chat.id, msg_text[x:x+4000], parse_mode="HTML")
+        else:
+            bot.edit_message_text(msg_text, chat_id=message.chat.id, message_id=status_msg.message_id, parse_mode="HTML")
+
+    except Exception as e:
+        logging.error(f"List fetch error: {e}")
+        bot.edit_message_text("❌ Could not load spots from Google Sheets.", chat_id=message.chat.id, message_id=status_msg.message_id)
 
 @bot.message_handler(func=lambda msg: True)
 def handle_incoming_text(message):
