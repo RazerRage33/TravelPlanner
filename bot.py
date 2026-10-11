@@ -87,24 +87,32 @@ def get_social_data(url: str) -> dict:
             run = apify_client.actor("apify/instagram-scraper").call(
                 run_input={"directUrls": [url]}
             )
-            for item in apify_client.dataset(run["defaultDatasetId"]).iterate_items():
+            # Safely extract dataset ID regardless of Apify SDK version
+            dataset_id = run.default_dataset_id if hasattr(run, 'default_dataset_id') else run["defaultDatasetId"]
+            
+            for item in apify_client.dataset(dataset_id).iterate_items():
                 data["caption"] = item.get("caption", "")
                 loc = item.get("location")
                 if loc and isinstance(loc, dict):
                     data["location_tag"] = loc.get("name", "")
                 elif isinstance(loc, str):
                     data["location_tag"] = loc
+                    
         elif "tiktok.com" in url:
             run = apify_client.actor("apidojo/tiktok-scraper").call(
                 run_input={"startUrls": [{"url": url}]}
             )
-            for item in apify_client.dataset(run["defaultDatasetId"]).iterate_items():
+            # Safely extract dataset ID regardless of Apify SDK version
+            dataset_id = run.default_dataset_id if hasattr(run, 'default_dataset_id') else run["defaultDatasetId"]
+            
+            for item in apify_client.dataset(dataset_id).iterate_items():
                 data["caption"] = item.get("text") or item.get("desc") or ""
                 poi = item.get("poi") or item.get("location")
                 if poi and isinstance(poi, dict):
                     data["location_tag"] = poi.get("name", "")
                 elif isinstance(poi, str):
                     data["location_tag"] = poi
+                    
     except Exception as e:
         logging.error(f"Apify Scraper Error: {e}")
     return data
