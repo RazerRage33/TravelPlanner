@@ -37,7 +37,7 @@ apify_client = ApifyClient(APIFY_TOKEN)
 app = Flask(__name__)
 
 genai.configure(api_key=GEMINI_API_KEY)
-ai_model = genai.GenerativeModel("gemini-3.8-flash")
+ai_model = genai.GenerativeModel("gemini-3.5-flash")
 
 try:
     creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
@@ -209,19 +209,30 @@ def handle_start(message):
 @bot.message_handler(commands=['delete'])
 def handle_delete(message):
     try:
-        records = sheet.get_all_records()
-        valid = [r for r in records if r.get("Collection") != "⏳ Pending"]
+        # Use get_all_values() to ignore headers and just read the raw grid
+        rows = sheet.get_all_values()[1:] # Skip the header row entirely
+        
+        # Filter valid rows (Index 2 is Collection, Index 0 is ID, Index 3 is Name)
+        valid = [r for r in rows if len(r) >= 4 and r[2] != "⏳ Pending" and r[2] != "Collection"]
+        
         if not valid:
             bot.reply_to(message, "Your map is currently empty.")
             return
 
         markup = InlineKeyboardMarkup()
         for row in valid[-8:]:
-            title = row.get("Location Name", "Unknown")
-            markup.add(InlineKeyboardButton(f"🗑️ {title}", callback_data=f"del_{row.get('ID')}"))
+            uid = row[0]
+            title = row[3] if str(row[3]).strip() else "Unnamed Place"
+            
+            # Prevent Telegram limit crashes by keeping names under 40 characters
+            short_title = (title[:37] + '...') if len(title) > 40 else title
+            markup.add(InlineKeyboardButton(f"🗑️ {short_title}", callback_data=f"del_{uid}"))
+            
         markup.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_delete"))
+
         bot.reply_to(message, "Tap an item to remove it from your map:", reply_markup=markup)
     except Exception as e:
+        logging.error(f"Delete fetch error: {e}")
         bot.reply_to(message, "Could not load spots from Google Sheets.")
 
 @bot.message_handler(commands=['list', 'collections'])
